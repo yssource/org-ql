@@ -37,11 +37,6 @@
 (require 'org-ql)
 (require 'org-ql-view)
 
-;;;; Variables
-
-(defvar org-ql-block-header nil
-  "An optional string to override the default header in `org-ql-block' agenda blocks.")
-
 ;;;; Customization
 
 (defgroup org-ql-search nil
@@ -219,11 +214,16 @@ necessary."
       (org-ql-view--display :buffer buffer :header header
         :string (s-join "\n" strings)))))
 
-(defun org-ql-search-block (query)
-  "Insert items for QUERY into current buffer.
-QUERY should be an `org-ql' query form.  Intended to be used as a
-user-defined function in `org-agenda-custom-commands'.  QUERY
-corresponds to the `match' item in the custom command form.
+(defun org-ql-search-block (args)
+  "Insert items for ARGS into current buffer.
+Intended to be used as a user-defined function in
+`org-agenda-custom-commands'.  ARGS corresponds to the `match'
+item in the custom command form.  It should be a list of
+arguments which may be applied to `org-ql-select', which see, but
+not including its BUFFERS-FILES argument (which is supplied
+through the Agenda).  An additional `:header' keyword argument
+may be supplied as a string, like that supplied to
+`org-ql-view--display'.
 
 Like other agenda block commands, it searches files returned by
 function `org-agenda-files'.  Inserts a newline after the block.
@@ -231,7 +231,8 @@ function `org-agenda-files'.  Inserts a newline after the block.
 If `org-ql-block-header' is non-nil, it is used as the header
 string for the block, otherwise a the header is formed
 automatically from the query."
-  (let (narrow-p old-beg old-end)
+  (-let* (((query &keys :header :sort) args)
+          narrow-p old-beg old-end)
     (when-let* ((from (pcase org-agenda-overriding-restriction
                         ('nil (org-agenda-files nil 'ifmode))
                         ('file (get 'org-agenda-files 'org-restrict))
@@ -243,7 +244,7 @@ automatically from the query."
                                       (narrow-to-region org-agenda-restrict-begin org-agenda-restrict-end))))))
                 (items (org-ql-select from query
                          :action 'element-with-markers
-                         :narrow narrow-p)))
+                         :narrow narrow-p :sort sort)))
       (when narrow-p
         ;; Restore buffer's previous restrictions.
         (with-current-buffer from
@@ -253,15 +254,22 @@ automatically from the query."
       ;; FIXME: `org-agenda--insert-overriding-header' is from an Org version newer than
       ;; I'm using.  Should probably declare it as a minimum Org version after upgrading.
       ;;  (org-agenda--insert-overriding-header (or org-ql-block-header (org-ql-agenda--header-line-format from query)))
-      (insert (org-add-props (or org-ql-block-header (org-ql-view--header-line-format from query))
+      (insert (org-add-props (or header (org-ql-view--header-line-format from query))
                   nil 'face 'org-agenda-structure) "\n")
       ;; Calling `org-agenda-finalize' should be unnecessary, because in a "series" agenda,
       ;; `org-agenda-multi' is bound non-nil, in which case `org-agenda-finalize' does nothing.
       ;; But we do call `org-agenda-finalize-entries', which allows `org-super-agenda' to work.
-      (->> items
-           (-map #'org-ql-view--format-element)
-           org-agenda-finalize-entries
-           insert)
+      ;; However, `org-agenda-finalize-entries' sorts entries with `org-entries-lessp', which
+      ;; overrides the sorting `org-ql' has already done, so we rebind `org-entries-lessp' to
+      ;; prevent it from affecting sort order.  (Ideally we would let `org-entries-lessp'
+      ;; handle sorting, but that's not possible, because we can't add the `type' text property
+      ;; it uses to sort entries, because the design of org-ql and org-agenda is fundamentally
+      ;; different.  So we have to do the sorting ourselves.)
+      (cl-letf (((symbol-function 'org-entries-lessp) #'ignore))
+        (->> items
+             (-map #'org-ql-view--format-element)
+             org-agenda-finalize-entries
+             insert))
       (insert "\n"))))
 
 ;;;###autoload
